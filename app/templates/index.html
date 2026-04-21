@@ -184,16 +184,21 @@
             if (response.ok && result.status === "success") {
                 // ✅ 交易成功 (200 OK)
                 addLog(`✅ ${result.message}: ${data.sender} -> ${data.receiver} ($${data.amount})`, "#28a745");
-                checkBalance();
+                // 如果「付款人」正好是目前查詢的帳戶，就自動刷新餘額；否則什麼都不做
+                const queryAcc = document.getElementById('queryAccount').value.trim();
+                if (queryAcc && (queryAcc === data.sender || queryAcc === data.receiver)) {
+                    checkMoney();
+                }
             } else {
                 // ❌ 邏輯錯誤 (例如 400 餘額不足)
                 addLog(`❌ 交易失敗: ${result.message}`, "#dc3545");
             }
 
         } catch (error) {
-            // 🛠️ 系統崩潰或網路斷線 (500 或 請求失敗)
+            // 🛠️ 系統崩潰或網路斷線
             console.error("發生錯誤:", error);
-            addLog(`🚨 系統異常: 無法連線至伺服器`, "#ffc107");
+            // 把真實錯誤訊息印出來，別再騙自己是「無法連線」
+            addLog(`🚨 系統異常: ${error.name} - ${error.message}`, "#ffc107");
         }
     }
 
