@@ -34,14 +34,14 @@ for user in USERS:
     payload = json.dumps({
         "sender": "SYSTEM",     # 特權帳號，繞過餘額檢查
         "receiver": user,
-        "amount": 5000          # 既然人少，每人發 5000 讓大家財富自由
+        "amount": 50000          # 既然人少，每人發 50000 讓大家財富自由
     }).encode('utf-8')
     
     req = urllib.request.Request(URL, data=payload, headers={'Content-Type': 'application/json'})
     
     try:
         with urllib.request.urlopen(req, timeout=3) as response:
-            print(f"💰 [SYSTEM] -> {user:<8} $5000 ✅")
+            print(f"💰 [SYSTEM] -> {user:<8} $50000 ✅")
     except Exception as e:
         print(f"⚠️ {user} 發送失敗: {e}")
     
