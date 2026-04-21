@@ -12,19 +12,14 @@ def init_routes(node):
 def index():
     # 根據 Docker Compose 設定的 IP 自動判斷 Client 名稱
     ip_mapping = {
-        "100.114.193.3:8001": "Node 1",
-        "100.114.193.3:8002": "Node 2",
-        "100.114.193.3:8003": "Node 3",
+        "100.114.193.3:8001": "Node 4",
+        "100.114.193.3:8002": "Node 5",
+        "100.114.193.3:8003": "Node 6",
 
-        # VM1
-        "100.127.242.27:8001": "Node 4",
-        "100.127.242.27:8002": "Node 5",
-        "100.127.242.27:8003": "Node 6",
-
-        # VM2
-        "100.119.224.86:8001": "Node 7",
-        "100.119.224.86:8002": "Node 8",
-        "100.119.224.86:8003": "Node 9"
+        # VM
+        "100.119.224.86:8001": "Node 1",
+        "100.119.224.86:8002": "Node 2",
+        "100.119.224.86:8003": "Node 3"
     }
     current_identity = f"{node_instance.ip}:{node_instance.port}"
     node_name = ip_mapping.get(current_identity, f"Node ({current_identity})")
