@@ -30,6 +30,11 @@ class P2PNode:
         self.node_id = os.environ.get("NODE_NAME", f"{ip}-{port}")
         self.network_token = "MY_BLOCKCHAIN_SECRET_2026"
 
+        self.nodes_contact_book = {}
+        for p_ip, p_port in self.peers:
+            p_id = f"{p_ip}-{p_port}"
+            self.nodes_contact_book[p_id] = (p_ip, p_port)
+
     def add_log(self, msg):
         print(msg)
         with self.log_lock:
@@ -181,12 +186,8 @@ class P2PNode:
         output_msg = f"--- 實名制共識比對 (Token 驗證) --- \n"
         output_msg += f"預期節點: {total_expected} | 實際收到回覆: {len(all_votes)}\n"
 
-        # 4. 統計出現次數最多的 Hash
-        from collections import Counter
-        hash_counts = Counter(all_votes.values())
-
-        # 排除掉無效的 Hash (例如 INVALID 或 EMPTY)
-        valid_hashes = {h: count for h, count in hash_counts.items() if h not in ["INVALID", "EMPTY"]}
+        # 4. 統計出現次數最多的 Hash並排除掉無效的 Hash (例如 INVALID 或 EMPTY)
+        valid_hashes = Counter(h for h in all_votes.values() if h not in ["INVALID", "EMPTY"])
 
         if not valid_hashes:
             return "❌ 系統不被信任：全網均無效帳本。" if gui_mode else None
@@ -208,8 +209,12 @@ class P2PNode:
                 output_msg += f"\n⚠️ 本地帳本與多數不符！向 {provider_id} 請求帳本修復..."
                 
                 # 【關鍵】從全域通訊錄找出 provider_id 的真實地址
-                if provider_id in ALL_NODES:
-                    self.sock.sendto(b"REQ_SYNC", ALL_NODES[provider_id])
+                if provider_id in self.nodes_contact_book:
+                    target_addr = self.nodes_contact_book[provider_id]
+                    self.sock.sendto(b"REQ_SYNC", target_addr)
+                else:
+                    # 如果萬一找不到人（例如是自己），可以印個 log
+                    print(f"DEBUG: 找不到節點 {provider_id} 的實體地址")
         else:
             output_msg += f"\n❌ 系統不被信任：無法達成過半數共識 (僅 {max_count}/{total_expected})。"
             
