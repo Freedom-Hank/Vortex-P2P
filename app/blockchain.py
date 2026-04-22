@@ -138,7 +138,7 @@ class P2PNode:
     def _check_chain_unlocked(self, initialize_missing_head=True):
         files = self._ledger_files_unlocked()
         if not files:
-            return True, "OK (no ledger blocks)"
+            return True, "沒有帳本區塊"
 
         for i in range(1, len(files)):
             prev_path = os.path.join(STORAGE_PATH, files[i - 1])
@@ -149,7 +149,7 @@ class P2PNode:
 
             if actual_prev_hash != recorded_hash:
                 block_id = files[i].split('.')[0]
-                return False, f"Ledger chain broken before block {block_id}."
+                return False, f"帳本鏈在區塊 {block_id} 之前斷裂"
 
         last_file = files[-1]
         actual_last_hash = self._get_file_hash(os.path.join(STORAGE_PATH, last_file))
@@ -159,15 +159,15 @@ class P2PNode:
 
             if actual_last_hash != expected_last_hash:
                 block_id = last_file.split('.')[0]
-                return False, f"Last ledger block {block_id} was changed."
+                return False, f"{block_id}被篡改 ."
 
         elif initialize_missing_head:
             self._write_head_hash_unlocked(actual_last_hash)
-            return False, "latest_hash.txt was missing; it has been initialized from the current ledger."
+            return False, "latest_hash.txt 檔案缺失；已從目前帳本初始化"
         else:
-            return False, "latest_hash.txt is missing."
+            return False, "latest_hash.txt 檔案缺失"
 
-        return True, "OK (ledger chain and latest block hash match)"
+        return True, "沒問題，帳本鏈和最新區塊Hash值匹配成功"
 
     def _collect_last_hash_votes(self):
         self.expected_hashes.clear()
@@ -207,7 +207,7 @@ class P2PNode:
             return False, f"Repair provider {provider_id} is not in the contact book."
 
         self.sock.sendto(b"REQ_SYNC", self.nodes_contact_book[provider_id])
-        return True, f"Repair requested from {provider_id}."
+        return True, f"{provider_id} 發起維修請求"
 
     def _repair_from_majority(self):
         my_hash, all_votes, total_expected = self._collect_last_hash_votes()
@@ -243,7 +243,7 @@ class P2PNode:
 
         if not is_valid and auto_repair:
             repaired, repair_msg = self._repair_from_majority()
-            msg = f"{msg} Auto repair: {repair_msg}"
+            msg = f"{msg} 自動修復: {repair_msg}"
             if repaired:
                 self.add_log(f"[AUTO_REPAIR] {msg}")
 
@@ -347,7 +347,7 @@ class P2PNode:
         with self.file_lock:
             is_valid, msg = self._check_chain_unlocked()
             if not is_valid:
-                raise ValueError(f"Cannot append transaction because local ledger is invalid: {msg}")
+                raise ValueError(f"無法追加交易，因為本地帳本無效：{msg}")
 
             files = self._ledger_files_unlocked()
             if not files: 
