@@ -8,6 +8,8 @@ import json
 from collections import Counter
 
 STORAGE_PATH = "/storage"
+HEAD_HASH_FILE = os.path.join(STORAGE_PATH, "latest_hash.txt")
+SYNC_WAIT_SECONDS = 2
 
 # ==========================================
 # P2P Node 核心類別
@@ -90,6 +92,10 @@ class P2PNode:
                         self.sock.sendto(b"REQ_SYNC", (trustable_ip, self.port))
 
                 elif message.startswith("REQ_SYNC"):
+                    last_hash = self._get_last_block_hash()
+                    if last_hash in ["INVALID", "EMPTY"]:
+                        self.add_log(f"[SYNC] Reject sync request from {addr[0]} because local ledger is {last_hash}.")
+                        continue
                     self.add_log(f"[共識機制] 收到來自 {addr[0]} 的修復請求，正在傳送正確帳本資料...")
                     ledger_data = self._pack_ledger()
                     self.sock.sendto(f"RESP_SYNC:{ledger_data}".encode('utf-8'), addr)
@@ -105,10 +111,112 @@ class P2PNode:
 # ==========================================
 # 帳本與共識邏輯 
 # ==========================================
+    def _ledger_files_unlocked(self):
+        return sorted(
+            [
+                f for f in os.listdir(STORAGE_PATH)
+                if f.endswith(".txt") and f.split('.')[0].isdigit()
+            ],
+            key=lambda x: int(x.split('.')[0])
+        )
+
+    def _get_file_hash(self, file_path):
+        with open(file_path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    def _write_head_hash_unlocked(self, last_hash=None):
+        files = self._ledger_files_unlocked()
+        if not files:
+            return
+
+        if last_hash is None:
+            last_hash = self._get_file_hash(os.path.join(STORAGE_PATH, files[-1]))
+
+        with open(HEAD_HASH_FILE, "w") as f:
+            f.write(last_hash + "\n")
+
+    def _check_chain_unlocked(self, initialize_missing_head=True):
+        files = self._ledger_files_unlocked()
+        if not files:
+            return True, "OK (no ledger blocks)"
+
+        for i in range(1, len(files)):
+            prev_path = os.path.join(STORAGE_PATH, files[i - 1])
+            curr_path = os.path.join(STORAGE_PATH, files[i])
+            actual_prev_hash = self._get_file_hash(prev_path)
+            with open(curr_path, "r") as f:
+                recorded_hash = f.readline().strip().replace("Sha256 of previous block: ", "")
+
+            if actual_prev_hash != recorded_hash:
+                block_id = files[i].split('.')[0]
+                return False, f"Ledger chain broken before block {block_id}."
+
+        last_file = files[-1]
+        actual_last_hash = self._get_file_hash(os.path.join(STORAGE_PATH, last_file))
+        if os.path.exists(HEAD_HASH_FILE):
+            with open(HEAD_HASH_FILE, "r") as f:
+                expected_last_hash = f.read().strip()
+
+            if actual_last_hash != expected_last_hash:
+                block_id = last_file.split('.')[0]
+                return False, f"Last ledger block {block_id} was changed."
+
+        elif initialize_missing_head:
+            self._write_head_hash_unlocked(actual_last_hash)
+            return False, "latest_hash.txt was missing; it has been initialized from the current ledger."
+        else:
+            return False, "latest_hash.txt is missing."
+
+        return True, "OK (ledger chain and latest block hash match)"
+
+    def _collect_last_hash_votes(self):
+        self.expected_hashes.clear()
+        self.awaiting_hashes = True
+
+        for peer in self.peers:
+            self.sock.sendto(b"REQ_HASH", peer)
+
+        my_hash = self._get_last_block_hash()
+        time.sleep(SYNC_WAIT_SECONDS)
+        self.awaiting_hashes = False
+
+        all_votes = self.expected_hashes.copy()
+        all_votes[self.node_id] = my_hash
+        total_expected = len(self.peers) + 1
+        return my_hash, all_votes, total_expected
+
+    def _majority_hash(self, all_votes):
+        valid_hashes = Counter(h for h in all_votes.values() if h not in ["INVALID", "EMPTY"])
+        if not valid_hashes:
+            return None, 0
+        return valid_hashes.most_common(1)[0]
+
+    def _request_sync_from_majority(self, my_hash, all_votes, total_expected):
+        majority_hash, max_count = self._majority_hash(all_votes)
+        if not majority_hash:
+            return False, "No valid peer ledger hash is available for repair."
+
+        if max_count <= total_expected / 2:
+            return False, f"No majority ledger hash yet ({max_count}/{total_expected})."
+
+        if my_hash == majority_hash:
+            return True, "Local ledger already matches the majority."
+
+        provider_id = [node_id for node_id, h in all_votes.items() if h == majority_hash][0]
+        if provider_id not in self.nodes_contact_book:
+            return False, f"Repair provider {provider_id} is not in the contact book."
+
+        self.sock.sendto(b"REQ_SYNC", self.nodes_contact_book[provider_id])
+        return True, f"Repair requested from {provider_id}."
+
+    def _repair_from_majority(self):
+        my_hash, all_votes, total_expected = self._collect_last_hash_votes()
+        return self._request_sync_from_majority(my_hash, all_votes, total_expected)
+
     def _execute_checkMoney(self, target, gui_mode=False):
         balance = 0
         with self.file_lock:
-            files = sorted([f for f in os.listdir(STORAGE_PATH) if f.endswith(".txt") and f.split('.')[0].isdigit()], key=lambda x: int(x.split('.')[0]))
+            files = self._ledger_files_unlocked()
             for file in files:
                 with open(f"{STORAGE_PATH}/{file}", "r") as f:
                     for line in f:
@@ -122,35 +230,38 @@ class P2PNode:
     def _execute_checkLog(self, target, gui_mode=False):
         logs = []
         with self.file_lock:
-            files = sorted([f for f in os.listdir(STORAGE_PATH) if f.endswith(".txt") and f.split('.')[0].isdigit()], key=lambda x: int(x.split('.')[0]))
+            files = self._ledger_files_unlocked()
             for file in files:
                 with open(f"{STORAGE_PATH}/{file}", "r") as f:
                     for line in f:
                         if "," in line and target in line: logs.append(line.strip())
         if gui_mode: return logs
 
-    def _execute_checkChain(self, gui_mode=False, print_result=False):
+    def _execute_checkChain(self, gui_mode=False, print_result=False, auto_repair=False):
         with self.file_lock:
-            files = sorted([f for f in os.listdir(STORAGE_PATH) if f.endswith(".txt") and f.split('.')[0].isdigit()], key=lambda x: int(x.split('.')[0]))
-            if len(files) <= 1: return (True, "✅ OK (目前僅有 1 個或 0 個區塊)") if gui_mode else True
-            for i in range(1, len(files)):
-                with open(f"{STORAGE_PATH}/{files[i-1]}", "rb") as f: actual_prev_hash = hashlib.sha256(f.read()).hexdigest()
-                with open(f"{STORAGE_PATH}/{files[i]}", "r") as f: recorded_hash = f.readline().strip().replace("Sha256 of previous block: ", "")
-                if actual_prev_hash != recorded_hash: return (False, f"❌ 帳本鍊受損！區塊：{files[i].split('.')[0]}") if gui_mode else False
-            return (True, "✅ OK (本地帳本鍊完整)") if gui_mode else True
+            is_valid, msg = self._check_chain_unlocked()
+
+        if not is_valid and auto_repair:
+            repaired, repair_msg = self._repair_from_majority()
+            msg = f"{msg} Auto repair: {repair_msg}"
+            if repaired:
+                self.add_log(f"[AUTO_REPAIR] {msg}")
+
+        return (is_valid, msg) if gui_mode else is_valid
 
     def _get_last_block_hash(self):
         res = self._execute_checkChain()
         is_valid = res[0] if type(res) == tuple else res
         if not is_valid: return "INVALID"
         with self.file_lock:
-            files = sorted([f for f in os.listdir(STORAGE_PATH) if f.endswith(".txt") and f.split('.')[0].isdigit()], key=lambda x: int(x.split('.')[0]))
+            files = self._ledger_files_unlocked()
             if not files: return "EMPTY"
-            with open(f"{STORAGE_PATH}/{files[-1]}", "rb") as f: return hashlib.sha256(f.read()).hexdigest()
+            return self._get_file_hash(os.path.join(STORAGE_PATH, files[-1]))
 
     def _pack_ledger(self):
         ledger_dict = {}
         with self.file_lock:
+            self._write_head_hash_unlocked()
             for file in [f for f in os.listdir(STORAGE_PATH) if f.endswith(".txt")]:
                 with open(f"{STORAGE_PATH}/{file}", "r") as f: ledger_dict[file] = f.read()
         return json.dumps(ledger_dict)
@@ -163,6 +274,7 @@ class P2PNode:
                     if f.endswith(".txt"): os.remove(os.path.join(STORAGE_PATH, f))
                 for filename, content in ledger_dict.items():
                     with open(os.path.join(STORAGE_PATH, filename), "w") as f: f.write(content)
+                self._write_head_hash_unlocked()
         except Exception as e: print(f"[Error] 解析失敗: {e}")
 
     def _execute_checkAllChains(self, target, gui_mode=False):
@@ -176,7 +288,7 @@ class P2PNode:
 
         # 3. 整合選票 (包含自己的一票)
         my_hash = self._get_last_block_hash()
-        time.sleep(2) 
+        time.sleep(SYNC_WAIT_SECONDS) 
         self.awaiting_hashes = False
         
         all_votes = self.expected_hashes.copy()
@@ -192,7 +304,7 @@ class P2PNode:
         if not valid_hashes:
             return "❌ 系統不被信任：全網均無效帳本。" if gui_mode else None
         
-        majority_hash, max_count = Counter(valid_hashes).most_common(1)[0]
+        majority_hash, max_count = valid_hashes.most_common(1)[0]
 
         # 5. 判斷是否過半數
         if max_count > total_expected / 2:
@@ -233,7 +345,11 @@ class P2PNode:
         
         tx_data = f"{sender}, {receiver}, {amount}\n"
         with self.file_lock:
-            files = sorted([f for f in os.listdir(STORAGE_PATH) if f.endswith(".txt") and f.split('.')[0].isdigit()], key=lambda x: int(x.split('.')[0]))
+            is_valid, msg = self._check_chain_unlocked()
+            if not is_valid:
+                raise ValueError(f"Cannot append transaction because local ledger is invalid: {msg}")
+
+            files = self._ledger_files_unlocked()
             if not files: 
                 curr_id, curr_path = 1, f"{STORAGE_PATH}/1.txt"
                 with open(curr_path, "w") as f: f.write("Sha256 of previous block: 0\nNext block: None\n")
@@ -248,5 +364,6 @@ class P2PNode:
                 for i, line in enumerate(lines):
                     if line.startswith("Next block:"): lines[i] = f"Next block: {new_id}.txt\n"
                 with open(curr_path, "w") as f: f.writelines(lines)
-                with open(curr_path, "rb") as f: prev_hash = hashlib.sha256(f.read()).hexdigest()
+                prev_hash = self._get_file_hash(curr_path)
                 with open(new_path, "w") as f: f.write(f"Sha256 of previous block: {prev_hash}\nNext block: None\n{tx_data}")
+            self._write_head_hash_unlocked()

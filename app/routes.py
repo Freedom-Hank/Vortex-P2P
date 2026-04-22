@@ -56,7 +56,7 @@ def api_transaction():
 
 @main_bp.route('/api/checkChain')
 def api_check_chain():
-    is_valid, msg = node_instance._execute_checkChain(gui_mode=True)
+    is_valid, msg = node_instance._execute_checkChain(gui_mode=True, auto_repair=True)
     return jsonify({"status": is_valid, "message": msg})
 
 @main_bp.route('/api/checkAllChains/<target>')
