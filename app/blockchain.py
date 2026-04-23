@@ -344,7 +344,7 @@ class P2PNode:
             # 2. 先呼叫我們剛才寫好的 checkMoney 查一下這個人剩多少錢
             res = self._execute_checkMoney(sender)
             # 防呆：如果是 None 就當作 0
-            current_balance = res if res is not None else 0
+            current_balance = res if res is not None else 'NULL'
             # 3. 檢查錢夠不夠
             if int(current_balance) < int(amount):
                 raise ValueError(f"餘額不足！{sender} 目前只有 {current_balance} 元")
