@@ -1,5 +1,3 @@
-version: '3.8'
-
 x-client-base: &client-base
   build: .
   tty: true
