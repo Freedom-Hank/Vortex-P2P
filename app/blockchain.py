@@ -214,6 +214,12 @@ class P2PNode:
         return self._request_sync_from_majority(my_hash, all_votes, total_expected)
 
     def _execute_checkMoney(self, target, gui_mode=False):
+        is_valid = self._execute_checkChain()
+        if not is_valid:
+            # 如果帳本損毀，直接報錯或回傳 None，不進行後續計算
+            self.add_log(f"⚠️ [安全警示] 拒絕查詢餘額：本地帳本已受損，請先進行共識修復！")
+            return None # 或是回傳 0，視你的前端邏輯而定
+
         balance = 0
         with self.file_lock:
             files = self._ledger_files_unlocked()
