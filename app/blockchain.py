@@ -36,6 +36,7 @@ class P2PNode:
         for p_ip, p_port in self.peers:
             p_id = f"{p_ip}-{p_port}"
             self.nodes_contact_book[p_id] = (p_ip, p_port)
+        self.pending_initiator = None
 
     def add_log(self, msg):
         print(msg)
@@ -87,6 +88,7 @@ class P2PNode:
                     if len(parts) >= 3:
                         majority_hash = parts[1]
                         provider_id = parts[2]
+                        initiator_id = parts[3] if len(parts) >= 4 else None  # 新增
                         my_hash = self._get_last_block_hash()
                         # 我才是提供者 -> 無需修復
                         if provider_id == self.node_id:
@@ -95,6 +97,7 @@ class P2PNode:
                             if provider_id in self.nodes_contact_book:
                                 provider_addr = self.nodes_contact_book[provider_id]
                                 self.add_log(f"[共識機制] ❌ 警告：本地帳本與全網共識不符！\n正在向信任節點 {provider_id} 請求修復...")
+                                self.pending_initiator = initiator_id  # 新增：記住誰發起的，修完要回報
                                 self.sock.sendto(b"REQ_SYNC", provider_addr)
                             else:
                                 self.add_log(f"[共識機制] ⚠️ 收到廣播但找不到提供者 {provider_id} 的通訊錄地址。")
@@ -112,6 +115,18 @@ class P2PNode:
                     json_str = message[len("RESP_SYNC:"):]
                     self._unpack_and_repair_ledger(json_str)
                     self.add_log("🎉 [共識機制] 置換完成！本地帳本已成功依照 >50% 多數決共識修復！")
+                    # 新增：把修復完成的事實回報給當初發起 checkAllChains 的節點
+                    initiator_id = getattr(self, "pending_initiator", None)
+                    if initiator_id and initiator_id in self.nodes_contact_book:
+                        self.sock.sendto(
+                            f"REPAIR_DONE:{self.node_id}".encode('utf-8'),
+                            self.nodes_contact_book[initiator_id]
+                        )
+                    self.pending_initiator = None
+
+                elif message.startswith("REPAIR_DONE:"):
+                    repaired_id = message.split(":", 1)[1]
+                    self.add_log(f"[共識機制] ✅ 確認節點 {repaired_id} 已完成帳本修復")
 
             except Exception as e:
                 print(f"[Error] 監聽發生錯誤: {e}")
@@ -290,6 +305,7 @@ class P2PNode:
                 for filename, content in ledger_dict.items():
                     with open(os.path.join(STORAGE_PATH, filename), "w") as f: f.write(content)
                 self._write_head_hash_unlocked()
+                self.add_log("[自我修復] 完成，本地帳本已被 provider 覆寫並更新 latest_hash.txt")
         except Exception as e: print(f"[Error] 解析失敗: {e}")
 
     def _execute_checkAllChains(self, target, gui_mode=False):
@@ -323,19 +339,34 @@ class P2PNode:
 
         # 5. 判斷是否過半數
         if max_count > total_expected / 2:
+
+            # 找出所有「實名制」回報但與多數派不一致的節點
+            tampered = []
+            for nid, h in all_votes.items():
+                if h != majority_hash:
+                    tag = "INVALID" if h == "INVALID" else ("EMPTY" if h == "EMPTY" else h[:12] + "...")
+                    tampered.append(f"{nid}(Hash={tag})")
+
+            if tampered:
+                detail = "、".join(tampered)
+                output_msg += f"\n🕵️ 偵測到帳本異常節點：{detail}"
+                self.add_log(f"[共識機制] 偵測到帳本異常節點：{detail}")
+                
             # 【關鍵】從多數派中挑一個持有正確 Hash 的節點作為修復來源
             provider_id = next(node_id for node_id, h in all_votes.items() if h == majority_hash)
 
             # 【全網修復廣播】告訴每一個節點「正確的 Hash 是什麼、該向誰要」
             # 任何本地 Hash 不符的節點（包含被竄改的 peer）會自動向 provider 請求 REQ_SYNC
-            broadcast_msg = f"BROADCAST_MAJORITY:{majority_hash}:{provider_id}"
+            broadcast_msg = f"BROADCAST_MAJORITY:{majority_hash}:{provider_id}:{self.node_id}"
             for peer in self.peers:
                 self.sock.sendto(broadcast_msg.encode('utf-8'), peer)
             self.add_log(f"[共識機制] 已向全網廣播修復通知（多數決 Hash: {majority_hash[:12]}... / 提供者: {provider_id}）")
 
             # 如果連我自己都跟多數派不符，也主動發一次 REQ_SYNC 修復自己
             if my_hash != majority_hash:
-                output_msg += f"\n⚠️ 本地帳本與多數不符！向 {provider_id} 請求帳本修復..."
+                output_msg += f"\n🔧 自我診斷：發起節點 {self.node_id} 自身帳本({'INVALID' if my_hash=='INVALID' else my_hash[:12]+'...'})與多數派不符，正在向 {provider_id} 自我修復..."
+                self.add_log(f"[自我修復] {self.node_id} 帳本異常，向 {provider_id} 請求 REQ_SYNC")
+
                 if provider_id in self.nodes_contact_book:
                     self.sock.sendto(b"REQ_SYNC", self.nodes_contact_book[provider_id])
 
