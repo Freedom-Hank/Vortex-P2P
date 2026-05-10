@@ -18,10 +18,10 @@ def index():
         "100.114.193.3:8002": "Node 5",
         "100.114.193.3:8003": "Node 6",
 
-        # VM
-        "100.119.224.86:8001": "Node 1",
-        "100.119.224.86:8002": "Node 2",
-        "100.119.224.86:8003": "Node 3"
+        # laptop
+        "100.94.194.29:8001": "Node 1",
+        "100.94.194.29:8002": "Node 2",
+        "100.94.194.29:8003": "Node 3"
     }
     current_identity = f"{node_instance.ip}:{node_instance.port}"
     node_name = ip_mapping.get(current_identity, f"Node ({current_identity})")
